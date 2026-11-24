@@ -2,15 +2,23 @@
   "id": "strategy-generator",
   "name": "策略参数生成器 / Strategy Generator",
   "description": "根据任务用途、模型能力与上下文约束，计算可解释的 Aide 策略参数、输出预算和会话设置建议。",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "skyelan1999",
   "license": "MIT",
   "main": "index.js",
-  "settingsSchema": {"type":"object","properties":{},"additionalProperties":false},
+  "settingsSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
   "workbench": {
     "protocol": 1,
     "entry": "viewer.html",
     "title": "策略参数生成器",
-    "tools": ["strategy_generate", "strategy_presets", "strategy_estimate_tokens"]
+    "tools": [
+      "strategy_generate",
+      "strategy_presets",
+      "strategy_estimate_tokens"
+    ]
   }
 }

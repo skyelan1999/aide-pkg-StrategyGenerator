@@ -27,7 +27,7 @@ def main():
  if existing:
   assert len(existing)==1 and existing[0]['draft'] and existing[0]['target_commitish']==a.source;release=existing[0]
  else:
-  notes=(ROOT/'docs/RELEASE-NOTES-0.1.0.md').read_text()+f'\n\nSource: {a.source}\nCI: https://github.com/{a.repo}/actions/runs/{a.ci_run}\n'
+  notes=(ROOT/'docs'/f'RELEASE-NOTES-{a.version}.md').read_text(encoding='utf-8')+f'\n\nSource: {a.source}\nCI: https://github.com/{a.repo}/actions/runs/{a.ci_run}\n'
   release=mutate(a.repo,'releases',{'tag_name':'v'+a.version,'target_commitish':a.source,'name':'Strategy Generator '+a.version+' · 策略参数生成器','body':notes,'draft':True,'prerelease':True})
  files=[package,sidecar];expected={f.name for f in files};assert not ({x['name'] for x in release['assets']}-expected)
  for f in files:

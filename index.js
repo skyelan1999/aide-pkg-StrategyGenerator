@@ -4,7 +4,7 @@ const engine=(() => {const module={exports:{}};
 /* MIT License · Copyright (c) 2026 skyelan1999 */
 (function(root,factory){if(typeof module==='object'&&module.exports)module.exports=factory();else root.StrategyGenerator=factory();})(typeof globalThis!=='undefined'?globalThis:this,function(){
  'use strict';
- const VERSION='0.1.0',RULES_VERSION='2026-11-24.1';
+ const VERSION='0.2.0',RULES_VERSION='2026-11-24.2';
  const PURPOSES=Object.freeze([
   {id:'quick',name:'日常问答',detail:'直接回答、快速解释',tokens:1024,temperature:.4,effort:1,parallel:false},
   {id:'coding',name:'编程实现',detail:'功能开发、脚本与重构',tokens:8192,temperature:.2,effort:3,parallel:true},
@@ -16,7 +16,30 @@ const engine=(() => {const module={exports:{}};
   {id:'structured',name:'结构化提取',detail:'分类、字段提取与 JSON',tokens:2048,temperature:.1,effort:2,parallel:true},
   {id:'translation',name:'翻译润色',detail:'忠实翻译与文字修订',tokens:4096,temperature:.2,effort:2,parallel:false}
  ]);
- const DEFAULTS=Object.freeze({purpose:'coding',complexity:3,priority:'balanced',modelMode:'unknown',sampler:'temperature',contextWindow:65536,inputTokens:8000,toolReserve:2048,modelOutputLimit:8192,creativity:0,separable:false,capacity:1,mode:'chat',jsonSupported:false});
+ const MODEL_GUIDES=[
+  {id:'generic',name:'通用 / 自行确认能力',mode:null,effort:'calculate',official:'不套用具体模型的参数约束，保留原有用途计算。',practice:'先用 5–10 个固定任务比较正确率、时延与输出长度，每轮只调一个变量。',sources:[]},
+  {id:'openai-reasoning',name:'OpenAI 推理模型（GPT / o 系列）',mode:'reasoning',effort:'calculate',official:'启用推理时省略 temperature / top_p；支持档位因型号而异。部分新型号的工具调用需要 Responses API。',practice:'日常任务先 low/medium，复杂排错或研究再比较 high。先验证端点及工具支持，再增加推理预算；不默认最高档。',sources:[['OpenAI 部署与推理建议','https://developers.openai.com/api/docs/guides/deployment-checklist']]},
+  {id:'codex-bridge',name:'Codex Bridge / Codex CLI',mode:'reasoning',effort:'calculate',official:'桥接的推理强度由 Codex CLI 与所选模型控制；不是通用采样参数透传服务。',practice:'编程从 medium 起步，复杂诊断比较 high；生成的 max_tokens 作为规划预算，不能宣称桥接严格执行该输出上限。',sources:[['Codex Bridge 源码与范围','https://github.com/skyelan1999/aide-pkg-CodexBridge/blob/v0.4.3/runtime/bridge.cjs']]},
+  {id:'deepseek-thinking',name:'DeepSeek 思考模式',mode:'reasoning',effort:'deepseek',official:'当前思考接口的温度与惩罚参数无效；Top P 行为随具体型号变化。官方将 medium 映射到 high。',practice:'快速校验先 low，多步推导用 high 起步；增加输出预算前先确认上下文余量。不要靠降低温度来调思考模式。',sources:[['DeepSeek 思考模式','https://api-docs.deepseek.com/guides/thinking_mode/']]},
+  {id:'deepseek-chat',name:'DeepSeek 非思考模式',mode:'sampling',effort:'off',baseline:'deepseek',official:'官方温度起点按用途区分：编程/数学 0、数据分析 1、问答/翻译 1.3、创作 1.5。不同型号的 Top P 支持不同。',practice:'优先采用温度基线；提取和排错映射到编程基线是本插件的经验选择。遇到格式漂移先完善输出约束，再做小幅试调。',sources:[['DeepSeek 温度参考','https://api-docs.deepseek.com/quick_start/parameter_settings/'],['思考/非思考与型号差异','https://api-docs.deepseek.com/guides/thinking_mode/']]},
+  {id:'qwen3-thinking',name:'Qwen3 原版 · 思考（非 3.5/3.6）',mode:'sampling',reasoning:true,effort:'auto',baseline:'qwen3-thinking',official:'原版 Qwen3 模型卡建议 T=0.6、Top P=0.95，避免贪心解码；还涉及 Top K=20、Min P=0。',practice:'先保留官方采样组合。思考开关在推理服务单独配置；不要把这套数值直接套到其他 Qwen 代际。',native:{enable_thinking:true,top_k:20,min_p:0},sources:[['Qwen3 官方模型卡','https://huggingface.co/Qwen/Qwen3-30B-A3B-FP8/blob/main/README.md']]},
+  {id:'qwen3-instruct',name:'Qwen3 原版 · 非思考',mode:'sampling',effort:'auto',baseline:'qwen3-instruct',official:'原版 Qwen3 非思考基线为 T=0.7、Top P=0.8；需在服务侧确认非思考开关。',practice:'翻译、常规问答先用非思考基线；复杂推导再比较思考模式，而不是单纯压低温度。',native:{enable_thinking:false,top_k:20,min_p:0},sources:[['Qwen3 官方模型卡','https://huggingface.co/Qwen/Qwen3-30B-A3B-FP8/blob/main/README.md']]},
+  {id:'qwen36-thinking',name:'Qwen3.6-27B · 思考',mode:'sampling',reasoning:true,effort:'auto',baseline:'qwen36-thinking',official:'该型号模型卡按任务区分：通用 T=1.0、精确编程 T=0.6；Top P=0.95、presence_penalty=0。',practice:'编程/排错采用精确编程起点，其他用途先用通用基线；该映射中的“排错”归类是经验规则。服务需显式支持相应采样项。',native:{enable_thinking:true,top_k:20,min_p:0,repetition_penalty:1},sources:[['Qwen3.6-27B 官方模型卡','https://huggingface.co/Qwen/Qwen3.6-27B/blob/main/README.md']]},
+  {id:'qwen36-instruct',name:'Qwen3.6-27B · 非思考',mode:'sampling',effort:'auto',baseline:'qwen36-instruct',official:'该型号非思考建议 T=0.7、Top P=0.8、presence_penalty=1.5。不同推理框架支持项不同。',practice:'先确认实际关闭思考，保留官方组合作为起点；严格复现任务用同一提示逐项比较，避免同时改多个值。',native:{enable_thinking:false,top_k:20,min_p:0,repetition_penalty:1},sources:[['Qwen3.6-27B 官方模型卡','https://huggingface.co/Qwen/Qwen3.6-27B/blob/main/README.md']]},
+  {id:'claude-modern',name:'Claude 现代推理模型 / 兼容网关',mode:'reasoning',effort:'auto',official:'现代 Claude 对非默认采样值可能直接报错；原生思考与 effort 使用 Claude 协议字段，不能假定等同于 Aide 的 reasoning_effort。',practice:'省略采样，优先自动；在确认网关映射后再调整 effort。旧版手动 thinking budget 与新版自适应思考应分别配置。',sources:[['Claude 思考与参数兼容','https://platform.claude.com/docs/en/build-with-claude/thinking']]},
+  {id:'gemini3',name:'Gemini 3.x / 兼容网关',mode:'reasoning',effort:'auto',official:'Gemini 3 系列优先保留采样默认；新型号已不推荐采样调节。原生推理使用 thinking_level，需兼容网关正确映射。',practice:'先通过清晰提示约束格式、篇幅和确定性；不要套用“代码任务就温度 0”。保持自动，验证网关支持后再调推理。',sources:[['Gemini 官方参数迁移','https://aistudio.google.com/docs/whats-new-gemini-3.6']]}
+ ];
+ function modelGuide(id){return MODEL_GUIDES.find(g=>g.id===id)}
+ function providerSampling(g,purpose){
+  if(g.baseline==='deepseek')return {temperature:({coding:0,debug:0,data:1,structured:0,quick:1.3,translation:1.3,creative:1.5,writing:1,research:1})[purpose]};
+  if(g.baseline==='qwen3-thinking')return {temperature:.6,top_p:.95};
+  if(g.baseline==='qwen3-instruct')return {temperature:.7,top_p:.8};
+  if(g.baseline==='qwen36-thinking')return {temperature:['coding','debug'].includes(purpose)?.6:1,top_p:.95,presence_penalty:0};
+  if(g.baseline==='qwen36-instruct')return {temperature:.7,top_p:.8,presence_penalty:1.5};
+  return null;
+ }
+
+ const DEFAULTS=Object.freeze({modelPreset:'generic',purpose:'coding',complexity:3,priority:'balanced',modelMode:'unknown',sampler:'temperature',contextWindow:65536,inputTokens:8000,toolReserve:2048,modelOutputLimit:8192,creativity:0,separable:false,capacity:1,mode:'chat',jsonSupported:false});
  const ALLOWED=new Set(Object.keys(DEFAULTS));
  function object(value){return value&&typeof value==='object'&&!Array.isArray(value)}
  function number(value,key,min,max,integer=true){if(typeof value!=='number'||!Number.isFinite(value)||value<min||value>max||(integer&&!Number.isInteger(value)))throw Error(key+' 必须为 '+min+'–'+max+(integer?' 的整数':' 的数字'));return value}
@@ -24,11 +47,13 @@ const engine=(() => {const module={exports:{}};
   if(!object(value))throw Error('输入必须为对象');
   for(const key of Object.keys(value))if(!ALLOWED.has(key))throw Error('未知字段：'+key);
   const x={...DEFAULTS,...value};
-  for(const [key,choices] of Object.entries({purpose:PURPOSES.map(p=>p.id),priority:['speed','balanced','quality'],modelMode:['unknown','sampling','reasoning'],sampler:['temperature','top_p','default'],mode:['chat','workflow']}))if(!choices.includes(x[key]))throw Error(key+' 不在支持的选项中');
+  for(const [key,choices] of Object.entries({modelPreset:MODEL_GUIDES.map(g=>g.id),purpose:PURPOSES.map(p=>p.id),priority:['speed','balanced','quality'],modelMode:['unknown','sampling','reasoning'],sampler:['temperature','top_p','default','provider'],mode:['chat','workflow']}))if(!choices.includes(x[key]))throw Error(key+' 不在支持的选项中');
   number(x.complexity,'complexity',1,5);number(x.creativity,'creativity',-50,50);
   number(x.contextWindow,'contextWindow',2048,2097152);number(x.inputTokens,'inputTokens',0,4194304);number(x.toolReserve,'toolReserve',0,1048576);number(x.modelOutputLimit,'modelOutputLimit',1,1048576);
   if(![1,2,3,4,5,10].includes(x.capacity))throw Error('capacity 仅支持 1、2、3、4、5、10');
   for(const key of ['separable','jsonSupported'])if(typeof x[key]!=='boolean')throw Error(key+' 必须为布尔值');
+  if(value.sampler===undefined&&modelGuide(x.modelPreset).baseline)x.sampler='provider';
+  if(x.sampler==='provider'&&!modelGuide(x.modelPreset).baseline)throw Error('当前模型没有可应用的官方采样基线');
   return x;
  }
  function estimateTokens(text){
@@ -38,12 +63,12 @@ const engine=(() => {const module={exports:{}};
  }
  function hash(value){let h=2166136261;for(const c of JSON.stringify(value)){h^=c.charCodeAt(0);h=Math.imul(h,16777619)}return (h>>>0).toString(16).padStart(8,'0')}
  function generate(input={}){
-  const x=normalize(input),p=PURPOSES.find(p=>p.id===x.purpose),warnings=[];
+  const x=normalize(input),p=PURPOSES.find(p=>p.id===x.purpose),guide=modelGuide(x.modelPreset),modelMode=guide.mode||x.modelMode,warnings=[];
   const safety=Math.min(8192,Math.max(512,Math.ceil(x.contextWindow*.08)));
   const available=x.contextWindow-x.inputTokens-x.toolReserve-safety;
   const priorityFactor={speed:.6,balanced:1,quality:1.4}[x.priority];
   const complexityFactor=.6+x.complexity*.2;
-  const reasoningFactor=x.modelMode==='reasoning'?1.5:1;
+  const reasoningFactor=modelMode==='reasoning'||guide.reasoning?1.5:1;
   const target=Math.ceil(p.tokens*complexityFactor*priorityFactor*reasoningFactor/256)*256;
   const cap=Math.min(65536,x.modelOutputLimit);
   const output=Math.max(0,Math.min(target,cap,available));
@@ -51,24 +76,31 @@ const engine=(() => {const module={exports:{}};
   if(!valid)warnings.push('输入、工具预留与安全余量已占满可用窗口。请减少输入或预留，或确认更大的真实模型窗口后重新生成。');
   if(output<target&&valid)warnings.push('输出预算已受模型上限、Aide 65536 上限或剩余窗口约束；长答案可能截断，请分段完成。');
   if(x.modelOutputLimit>65536)warnings.push('模型输出上限超过 Aide 当前配置允许的 65536，已按 Aide 上限计算。');
-  if(x.modelMode==='unknown')warnings.push('模型能力未确认：省略采样与显式推理参数，保留模型默认；请按实际模型文档确认能力。');
-  if(x.modelMode==='reasoning')warnings.push('推理兼容模式省略 temperature、top_p、惩罚和停止词。输出预算包含为推理留出的启发式余量，不保证可见回答长度。');
+  if(modelMode==='unknown')warnings.push('模型能力未确认：省略采样与显式推理参数，保留模型默认；请按实际模型文档确认能力。');
+  if(modelMode==='reasoning')warnings.push('推理兼容模式省略 temperature、top_p、惩罚和停止词。输出预算包含为推理留出的启发式余量，不保证可见回答长度。');
   const params={};
   if(valid)params.max_tokens=output;
   let sampling='模型默认';
-  if(x.modelMode==='sampling'&&x.sampler!=='default'){
+  if(modelMode==='sampling'&&!['default','provider'].includes(x.sampler)){
    const temperature=Math.round(Math.min(1.8,Math.max(0,p.temperature+x.creativity/100))*100)/100;
    if(x.sampler==='temperature'){params.temperature=temperature;sampling='temperature = '+temperature}
    else {params.top_p=Math.round((.7+temperature/1.8*.3)*100)/100;sampling='top_p = '+params.top_p}
   }
+  if(x.sampler==='provider'&&guide.baseline){Object.assign(params,providerSampling(guide,p.id));sampling=Object.entries(providerSampling(guide,p.id)).map(([k,v])=>k+' = '+v).join('，')}
+  if(guide.id!=='generic')warnings.push('模型经验仅适用于所标明的型号/模式；网关、量化与服务端默认可能改变实际行为。核对日期：2026-11-24。');
+  if(guide.native)warnings.push('Top K、Min P、重复惩罚与思考开关需在服务端单独确认；未混入 Aide profile.params。');
+  if(guide.id==='codex-bridge')warnings.push('Codex Bridge 的输出长度由 CLI/模型管理，max_tokens 只是本页规划预算。');
   const json=p.id==='structured';
   if(json&&x.jsonSupported)params.response_format='json_object';
   else if(json)warnings.push('未确认模型支持 JSON 对象模式：省略 response_format，请在任务提示中要求 JSON 并验证返回结构。');
   let reasoning='auto';
-  if(x.modelMode==='reasoning'){
+  if(modelMode==='reasoning'){
    const score=p.effort+x.complexity-3+(x.priority==='quality'?1:x.priority==='speed'?-1:0);
    reasoning=score>=4?'high':score>=2?'medium':'low';
   }
+  if(guide.effort==='auto')reasoning='auto';
+  if(guide.effort==='off')reasoning='off';
+  if(guide.effort==='deepseek'&&reasoning==='medium')reasoning='high';
   let parallelism=1;
   if(x.mode==='chat'&&x.separable&&p.parallel&&x.capacity>1&&x.priority!=='speed')parallelism=Math.min(x.capacity,x.complexity>=4&&x.priority==='quality'?3:2);
   if(parallelism>1)warnings.push('并行容量包含主环境，临时环境由 Aide 按需创建。更多容量不保证等比例提速，实际调用与用量可能增加。');
@@ -76,27 +108,29 @@ const engine=(() => {const module={exports:{}};
   const id='sg-'+p.id+'-'+hash(x),priorityNames={speed:'速度',balanced:'均衡',quality:'质量'};
   const profile=valid?{id,name:p.name+'·'+priorityNames[x.priority],params}:null;
   const total=x.inputTokens+x.toolReserve+safety+output;
-  return {schemaVersion:1,pluginVersion:VERSION,rulesVersion:RULES_VERSION,valid,applied:false,inputs:x,purpose:{id:p.id,name:p.name},profile,
+  return {schemaVersion:1,pluginVersion:VERSION,rulesVersion:RULES_VERSION,valid,applied:false,inputs:x,effectiveSettings:{modelMode,sampler:x.sampler},modelAdvice:{...guide,checkedAt:'2026-11-24',basis:'官方参数语义 + 插件经验建议；没有新增真实模型评测'},purpose:{id:p.id,name:p.name},profile,
    sessionRecommendations:valid?{strategy:'manual',profile:id,reasoningEffort:reasoning,parallelism}:null,
    budget:{contextWindow:x.contextWindow,inputTokens:x.inputTokens,toolReserve:x.toolReserve,safetyReserve:safety,availableForOutput:Math.max(0,available),targetOutput:target,maxTokens:output,modelOutputLimit:x.modelOutputLimit,aideOutputCeiling:65536,remaining:Math.max(0,x.contextWindow-total),overBy:Math.max(0,total-x.contextWindow)},
    explanation:[
     {field:'max_tokens',value:valid?output:'无法生成',location:'设置 → AI 参数配置 → 自定义配置',reason:'目标 = 向上对齐 256（用途基数 '+p.tokens+' × 复杂度系数 '+complexityFactor.toFixed(1)+' × 偏好系数 '+priorityFactor+' × 推理余量系数 '+reasoningFactor+'）；结果取目标、模型输出上限、Aide 65536 上限及剩余窗口的最小值。'},
-    {field:params.temperature!==undefined?'temperature':params.top_p!==undefined?'top_p':'sampling',value:params.temperature??params.top_p??sampling,location:'同一自定义配置的 temperature 或 Top P',reason:'只调一个采样项；省略的参数沿用提供商默认。用途基准与创意微调是可复算的经验规则，不是质量保证。'},
+    {field:params.temperature!==undefined?'temperature':params.top_p!==undefined?'top_p':'sampling',value:params.temperature??params.top_p??sampling,location:'同一自定义配置的 temperature 或 Top P',reason:x.sampler==='provider'?'采用所选型号官方采样基线；Qwen 的组合是明确的厂商例外。创意微调在基线模式下不生效。':'只调一个采样项；省略的参数沿用提供商默认。用途基准与创意微调是经验规则。'},
+    ...(params.top_p!==undefined&&params.temperature!==undefined?[{field:'top_p',value:params.top_p,location:'同一自定义配置的 Top P',reason:'与温度一起来自所选型号的官方基线，不是通用双重调参建议。'}]:[]),
+    ...(params.presence_penalty!==undefined?[{field:'presence_penalty',value:params.presence_penalty,location:'同一自定义配置的存在惩罚',reason:'来自指定 Qwen3.6-27B 模式的官方基线；不能外推到其他型号。'}]:[]),
     ...(json?[{field:'response_format',value:params.response_format||'省略（模型默认）',location:'同一自定义配置的输出格式',reason:'只有已确认模型支持 JSON 对象时才填写 json_object。它不验证字段结构；仍需提示与结果校验。'}]:[]),
-    {field:'reasoningEffort',value:reasoning,location:'聊天栏策略菜单 → 推理强度',reason:x.modelMode==='reasoning'?'按用途推理需求、复杂度与速度偏好计算 low / medium / high；若模型未提供该档位，请保留自动。':'模型推理能力未确认或使用标准采样模式，保留 auto。'},
+    {field:'reasoningEffort',value:reasoning,location:'聊天栏策略菜单 → 推理强度',reason:guide.effort==='auto'?'保持 auto，思考开关和原生推理字段需按服务协议单独确认。':guide.effort==='off'?'非思考模式建议关闭推理，仍需确认实际端点接受该设置。':guide.effort==='deepseek'?'按用途与复杂度在 low / high 中选择；当前 DeepSeek 接口将 medium 映射为 high。':modelMode==='reasoning'?'按用途推理需求、复杂度与速度偏好计算 low / medium / high；若模型未提供该档位，请保留自动。':'模型推理能力未确认或使用标准采样模式，保留 auto。'},
     {field:'parallelism',value:parallelism,location:'聊天栏策略菜单 → 并行倍率',reason:'仅当普通对话、可独立拆分且容量允许时建议 2–3；否则为 1。不改变审批授权。'},
     {field:'contextWindow',value:x.contextWindow,location:'模型设置 → 对应模型 → 上下文窗口',reason:'这是你输入的模型真实窗口，用于预算校验；插件不会推断或扩大模型能力。'}
    ],warnings,
    promptSuggestion:json?'仅输出合法 JSON 对象，字段名和类型按我提供的结构；未知值使用 null，不添加代码围栏。':'说明必要假设与证据，按要求的篇幅输出；不足的信息先指出。',
    applicationGuide:['在 Aide 的 AI 参数配置中新建自定义配置，按 profile.params 填写已生成的字段；对省略项保持留空。','在当前聊天栏选择手动策略并选中该自定义配置，再分别设置推理强度和并行倍率。','本 JSON 是建议报告，不是 Aide 完整配置导入文件；不要覆盖 profiles.json 或模型配置。','按真实任务小样本比较质量、时延与用量后再调整；插件未执行模型调用或基准测试。']};
  }
- const schema={type:'object',additionalProperties:false,properties:{purpose:{type:'string',enum:PURPOSES.map(p=>p.id)},complexity:{type:'integer',minimum:1,maximum:5},priority:{type:'string',enum:['speed','balanced','quality']},modelMode:{type:'string',enum:['unknown','sampling','reasoning']},sampler:{type:'string',enum:['temperature','top_p','default']},contextWindow:{type:'integer',minimum:2048,maximum:2097152},inputTokens:{type:'integer',minimum:0,maximum:4194304},toolReserve:{type:'integer',minimum:0,maximum:1048576},modelOutputLimit:{type:'integer',minimum:1,maximum:1048576},creativity:{type:'integer',minimum:-50,maximum:50},separable:{type:'boolean'},capacity:{type:'integer',enum:[1,2,3,4,5,10]},mode:{type:'string',enum:['chat','workflow']},jsonSupported:{type:'boolean'}}};
- return {VERSION,RULES_VERSION,PURPOSES,DEFAULTS,schema,generate,estimateTokens};
+ const schema={type:'object',additionalProperties:false,properties:{modelPreset:{type:'string',enum:MODEL_GUIDES.map(g=>g.id)},purpose:{type:'string',enum:PURPOSES.map(p=>p.id)},complexity:{type:'integer',minimum:1,maximum:5},priority:{type:'string',enum:['speed','balanced','quality']},modelMode:{type:'string',enum:['unknown','sampling','reasoning']},sampler:{type:'string',enum:['temperature','top_p','default','provider']},contextWindow:{type:'integer',minimum:2048,maximum:2097152},inputTokens:{type:'integer',minimum:0,maximum:4194304},toolReserve:{type:'integer',minimum:0,maximum:1048576},modelOutputLimit:{type:'integer',minimum:1,maximum:1048576},creativity:{type:'integer',minimum:-50,maximum:50},separable:{type:'boolean'},capacity:{type:'integer',enum:[1,2,3,4,5,10]},mode:{type:'string',enum:['chat','workflow']},jsonSupported:{type:'boolean'}}};
+ return {VERSION,RULES_VERSION,PURPOSES,MODEL_GUIDES,DEFAULTS,schema,generate,estimateTokens};
 });
 
 return module.exports;})();
 module.exports={name:'strategy-generator',apply(ctx){
  ctx.tool({name:'strategy_generate',description:'本地计算 Aide 模型策略建议：用途、复杂度、速度偏好、模型能力和上下文预算。返回规则依据、兼容 profile、会话建议及填写位置；applied 始终为 false，不修改任何设置，不调用模型。',parameters:engine.schema,handler:async args=>JSON.stringify(engine.generate(args))});
- ctx.tool({name:'strategy_presets',description:'读取策略生成器的用途、默认输入与规则版本，不读取用户配置或凭据。',parameters:{type:'object',properties:{},additionalProperties:false},handler:async args=>{if(args&&Object.keys(args).length)throw Error('此工具不接受参数');return JSON.stringify({version:engine.VERSION,rulesVersion:engine.RULES_VERSION,purposes:engine.PURPOSES,defaults:engine.DEFAULTS})}});
+ ctx.tool({name:'strategy_presets',description:'读取策略生成器的用途、默认输入与规则版本，不读取用户配置或凭据。',parameters:{type:'object',properties:{},additionalProperties:false},handler:async args=>{if(args&&Object.keys(args).length)throw Error('此工具不接受参数');return JSON.stringify({version:engine.VERSION,rulesVersion:engine.RULES_VERSION,purposes:engine.PURPOSES,modelGuides:engine.MODEL_GUIDES,defaults:engine.DEFAULTS})}});
  ctx.tool({name:'strategy_estimate_tokens',description:'用字符公式粗略估算文本 tokens，只返回数量与方法，不返回或保存原文。不能替代模型 tokenizer，不自动计入历史或工具。',parameters:{type:'object',properties:{text:{type:'string',maxLength:200000}},required:['text'],additionalProperties:false},handler:async args=>{if(!args||Object.keys(args).length!==1||!Object.hasOwn(args,'text'))throw Error('仅接受 text 字符串');return JSON.stringify(engine.estimateTokens(args.text))}});
 }};
