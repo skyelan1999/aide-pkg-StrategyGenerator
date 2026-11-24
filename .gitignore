@@ -1,0 +1,5 @@
+.DS_Store
+.agent-state/
+dist/
+node_modules/
+__pycache__/

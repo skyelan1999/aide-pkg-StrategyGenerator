@@ -1,0 +1,92 @@
+/* MIT License · Copyright (c) 2026 skyelan1999 */
+(function(root,factory){if(typeof module==='object'&&module.exports)module.exports=factory();else root.StrategyGenerator=factory();})(typeof globalThis!=='undefined'?globalThis:this,function(){
+ 'use strict';
+ const VERSION='0.1.0',RULES_VERSION='2026-11-24.1';
+ const PURPOSES=Object.freeze([
+  {id:'quick',name:'日常问答',detail:'直接回答、快速解释',tokens:1024,temperature:.4,effort:1,parallel:false},
+  {id:'coding',name:'编程实现',detail:'功能开发、脚本与重构',tokens:8192,temperature:.2,effort:3,parallel:true},
+  {id:'debug',name:'排错审查',detail:'复现、定位与代码审查',tokens:4096,temperature:.1,effort:4,parallel:true},
+  {id:'research',name:'研究分析',detail:'资料核对、多角度研究',tokens:8192,temperature:.3,effort:4,parallel:true},
+  {id:'data',name:'数据与推导',detail:'计算、分析与逻辑推导',tokens:4096,temperature:.1,effort:4,parallel:true},
+  {id:'writing',name:'专业写作',detail:'说明、报告与技术文档',tokens:4096,temperature:.5,effort:2,parallel:true},
+  {id:'creative',name:'创意构思',detail:'命名、故事与多方案发散',tokens:4096,temperature:1.1,effort:2,parallel:true},
+  {id:'structured',name:'结构化提取',detail:'分类、字段提取与 JSON',tokens:2048,temperature:.1,effort:2,parallel:true},
+  {id:'translation',name:'翻译润色',detail:'忠实翻译与文字修订',tokens:4096,temperature:.2,effort:2,parallel:false}
+ ]);
+ const DEFAULTS=Object.freeze({purpose:'coding',complexity:3,priority:'balanced',modelMode:'unknown',sampler:'temperature',contextWindow:65536,inputTokens:8000,toolReserve:2048,modelOutputLimit:8192,creativity:0,separable:false,capacity:1,mode:'chat',jsonSupported:false});
+ const ALLOWED=new Set(Object.keys(DEFAULTS));
+ function object(value){return value&&typeof value==='object'&&!Array.isArray(value)}
+ function number(value,key,min,max,integer=true){if(typeof value!=='number'||!Number.isFinite(value)||value<min||value>max||(integer&&!Number.isInteger(value)))throw Error(key+' 必须为 '+min+'–'+max+(integer?' 的整数':' 的数字'));return value}
+ function normalize(value={}){
+  if(!object(value))throw Error('输入必须为对象');
+  for(const key of Object.keys(value))if(!ALLOWED.has(key))throw Error('未知字段：'+key);
+  const x={...DEFAULTS,...value};
+  for(const [key,choices] of Object.entries({purpose:PURPOSES.map(p=>p.id),priority:['speed','balanced','quality'],modelMode:['unknown','sampling','reasoning'],sampler:['temperature','top_p','default'],mode:['chat','workflow']}))if(!choices.includes(x[key]))throw Error(key+' 不在支持的选项中');
+  number(x.complexity,'complexity',1,5);number(x.creativity,'creativity',-50,50);
+  number(x.contextWindow,'contextWindow',2048,2097152);number(x.inputTokens,'inputTokens',0,4194304);number(x.toolReserve,'toolReserve',0,1048576);number(x.modelOutputLimit,'modelOutputLimit',1,1048576);
+  if(![1,2,3,4,5,10].includes(x.capacity))throw Error('capacity 仅支持 1、2、3、4、5、10');
+  for(const key of ['separable','jsonSupported'])if(typeof x[key]!=='boolean')throw Error(key+' 必须为布尔值');
+  return x;
+ }
+ function estimateTokens(text){
+  if(typeof text!=='string'||text.length>200000)throw Error('估算文本须为字符串且不超过 200000 个 UTF-16 字符');
+  let ascii=0,other=0;for(const char of text){if(char.codePointAt(0)<128)ascii++;else other++}
+  return {tokens:Math.ceil(ascii/3+other*1.5),characters:Array.from(text).length,method:'ASCII 字符 ÷ 3 + 非 ASCII 字符 × 1.5，向上取整；粗略估算，不是模型 tokenizer，未计历史、系统提示或工具定义。'};
+ }
+ function hash(value){let h=2166136261;for(const c of JSON.stringify(value)){h^=c.charCodeAt(0);h=Math.imul(h,16777619)}return (h>>>0).toString(16).padStart(8,'0')}
+ function generate(input={}){
+  const x=normalize(input),p=PURPOSES.find(p=>p.id===x.purpose),warnings=[];
+  const safety=Math.min(8192,Math.max(512,Math.ceil(x.contextWindow*.08)));
+  const available=x.contextWindow-x.inputTokens-x.toolReserve-safety;
+  const priorityFactor={speed:.6,balanced:1,quality:1.4}[x.priority];
+  const complexityFactor=.6+x.complexity*.2;
+  const reasoningFactor=x.modelMode==='reasoning'?1.5:1;
+  const target=Math.ceil(p.tokens*complexityFactor*priorityFactor*reasoningFactor/256)*256;
+  const cap=Math.min(65536,x.modelOutputLimit);
+  const output=Math.max(0,Math.min(target,cap,available));
+  const valid=available>=256;
+  if(!valid)warnings.push('输入、工具预留与安全余量已占满可用窗口。请减少输入或预留，或确认更大的真实模型窗口后重新生成。');
+  if(output<target&&valid)warnings.push('输出预算已受模型上限、Aide 65536 上限或剩余窗口约束；长答案可能截断，请分段完成。');
+  if(x.modelOutputLimit>65536)warnings.push('模型输出上限超过 Aide 当前配置允许的 65536，已按 Aide 上限计算。');
+  if(x.modelMode==='unknown')warnings.push('模型能力未确认：省略采样与显式推理参数，保留模型默认；请按实际模型文档确认能力。');
+  if(x.modelMode==='reasoning')warnings.push('推理兼容模式省略 temperature、top_p、惩罚和停止词。输出预算包含为推理留出的启发式余量，不保证可见回答长度。');
+  const params={};
+  if(valid)params.max_tokens=output;
+  let sampling='模型默认';
+  if(x.modelMode==='sampling'&&x.sampler!=='default'){
+   const temperature=Math.round(Math.min(1.8,Math.max(0,p.temperature+x.creativity/100))*100)/100;
+   if(x.sampler==='temperature'){params.temperature=temperature;sampling='temperature = '+temperature}
+   else {params.top_p=Math.round((.7+temperature/1.8*.3)*100)/100;sampling='top_p = '+params.top_p}
+  }
+  const json=p.id==='structured';
+  if(json&&x.jsonSupported)params.response_format='json_object';
+  else if(json)warnings.push('未确认模型支持 JSON 对象模式：省略 response_format，请在任务提示中要求 JSON 并验证返回结构。');
+  let reasoning='auto';
+  if(x.modelMode==='reasoning'){
+   const score=p.effort+x.complexity-3+(x.priority==='quality'?1:x.priority==='speed'?-1:0);
+   reasoning=score>=4?'high':score>=2?'medium':'low';
+  }
+  let parallelism=1;
+  if(x.mode==='chat'&&x.separable&&p.parallel&&x.capacity>1&&x.priority!=='speed')parallelism=Math.min(x.capacity,x.complexity>=4&&x.priority==='quality'?3:2);
+  if(parallelism>1)warnings.push('并行容量包含主环境，临时环境由 Aide 按需创建。更多容量不保证等比例提速，实际调用与用量可能增加。');
+  if(x.mode==='workflow')warnings.push('工作流模式按兼容基线建议容量 1；具体工作流节点的并行与权限请在 Aide 中单独配置。');
+  const id='sg-'+p.id+'-'+hash(x),priorityNames={speed:'速度',balanced:'均衡',quality:'质量'};
+  const profile=valid?{id,name:p.name+'·'+priorityNames[x.priority],params}:null;
+  const total=x.inputTokens+x.toolReserve+safety+output;
+  return {schemaVersion:1,pluginVersion:VERSION,rulesVersion:RULES_VERSION,valid,applied:false,inputs:x,purpose:{id:p.id,name:p.name},profile,
+   sessionRecommendations:valid?{strategy:'manual',profile:id,reasoningEffort:reasoning,parallelism}:null,
+   budget:{contextWindow:x.contextWindow,inputTokens:x.inputTokens,toolReserve:x.toolReserve,safetyReserve:safety,availableForOutput:Math.max(0,available),targetOutput:target,maxTokens:output,modelOutputLimit:x.modelOutputLimit,aideOutputCeiling:65536,remaining:Math.max(0,x.contextWindow-total),overBy:Math.max(0,total-x.contextWindow)},
+   explanation:[
+    {field:'max_tokens',value:valid?output:'无法生成',location:'设置 → AI 参数配置 → 自定义配置',reason:'目标 = 向上对齐 256（用途基数 '+p.tokens+' × 复杂度系数 '+complexityFactor.toFixed(1)+' × 偏好系数 '+priorityFactor+' × 推理余量系数 '+reasoningFactor+'）；结果取目标、模型输出上限、Aide 65536 上限及剩余窗口的最小值。'},
+    {field:params.temperature!==undefined?'temperature':params.top_p!==undefined?'top_p':'sampling',value:params.temperature??params.top_p??sampling,location:'同一自定义配置的 temperature 或 Top P',reason:'只调一个采样项；省略的参数沿用提供商默认。用途基准与创意微调是可复算的经验规则，不是质量保证。'},
+    ...(json?[{field:'response_format',value:params.response_format||'省略（模型默认）',location:'同一自定义配置的输出格式',reason:'只有已确认模型支持 JSON 对象时才填写 json_object。它不验证字段结构；仍需提示与结果校验。'}]:[]),
+    {field:'reasoningEffort',value:reasoning,location:'聊天栏策略菜单 → 推理强度',reason:x.modelMode==='reasoning'?'按用途推理需求、复杂度与速度偏好计算 low / medium / high；若模型未提供该档位，请保留自动。':'模型推理能力未确认或使用标准采样模式，保留 auto。'},
+    {field:'parallelism',value:parallelism,location:'聊天栏策略菜单 → 并行倍率',reason:'仅当普通对话、可独立拆分且容量允许时建议 2–3；否则为 1。不改变审批授权。'},
+    {field:'contextWindow',value:x.contextWindow,location:'模型设置 → 对应模型 → 上下文窗口',reason:'这是你输入的模型真实窗口，用于预算校验；插件不会推断或扩大模型能力。'}
+   ],warnings,
+   promptSuggestion:json?'仅输出合法 JSON 对象，字段名和类型按我提供的结构；未知值使用 null，不添加代码围栏。':'说明必要假设与证据，按要求的篇幅输出；不足的信息先指出。',
+   applicationGuide:['在 Aide 的 AI 参数配置中新建自定义配置，按 profile.params 填写已生成的字段；对省略项保持留空。','在当前聊天栏选择手动策略并选中该自定义配置，再分别设置推理强度和并行倍率。','本 JSON 是建议报告，不是 Aide 完整配置导入文件；不要覆盖 profiles.json 或模型配置。','按真实任务小样本比较质量、时延与用量后再调整；插件未执行模型调用或基准测试。']};
+ }
+ const schema={type:'object',additionalProperties:false,properties:{purpose:{type:'string',enum:PURPOSES.map(p=>p.id)},complexity:{type:'integer',minimum:1,maximum:5},priority:{type:'string',enum:['speed','balanced','quality']},modelMode:{type:'string',enum:['unknown','sampling','reasoning']},sampler:{type:'string',enum:['temperature','top_p','default']},contextWindow:{type:'integer',minimum:2048,maximum:2097152},inputTokens:{type:'integer',minimum:0,maximum:4194304},toolReserve:{type:'integer',minimum:0,maximum:1048576},modelOutputLimit:{type:'integer',minimum:1,maximum:1048576},creativity:{type:'integer',minimum:-50,maximum:50},separable:{type:'boolean'},capacity:{type:'integer',enum:[1,2,3,4,5,10]},mode:{type:'string',enum:['chat','workflow']},jsonSupported:{type:'boolean'}}};
+ return {VERSION,RULES_VERSION,PURPOSES,DEFAULTS,schema,generate,estimateTokens};
+});

@@ -1,0 +1,39 @@
+name: Publish checked plugin
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without v
+        required: true
+      source_sha:
+        description: Exact source commit on main
+        required: true
+      ci_run:
+        description: Successful Strategy Generator checks run at that source
+        required: true
+permissions:
+  contents: read
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_SOURCE: ${{ inputs.source_sha }}
+      RELEASE_CI: ${{ inputs.ci_run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm run build && git diff --exit-code && npm run package
+      - run: python3 scripts/publish-release.py --repo "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" --source "$RELEASE_SOURCE" --ci-run "$RELEASE_CI"
