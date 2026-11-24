@@ -4,10 +4,12 @@
   "private": true,
   "description": "Offline, explainable Aide model-strategy parameter generator",
   "license": "MIT",
-  "engines": {"node": ">=18"},
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "node scripts/build.cjs",
-    "test": "node --test scripts/*.test.cjs",
-    "package": "python3 scripts/package.py --out dist"
+    "test": "node scripts/test.cjs",
+    "package": "node scripts/package.cjs"
   }
 }
