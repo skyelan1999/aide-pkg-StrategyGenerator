@@ -3,15 +3,15 @@ const engine=StrategyGenerator,$=id=>document.getElementById(id);let purpose=eng
 const numeric=['complexity','creativity','contextWindow','inputTokens','toolReserve','modelOutputLimit','capacity'];
 function inputs(){const x={purpose};for(const key of Object.keys(engine.DEFAULTS)){if(key==='purpose')continue;const node=$(key);x[key]=node.type==='checkbox'?node.checked:numeric.includes(key)?Number(node.value):node.value;if(numeric.includes(key)&&node.value.trim()==='')throw Error('请填写完整的数字限制。')}return x}
 function status(text,error=false){$('status').textContent=text;$('status').classList.toggle('error',error)}
-function controls(){const sampling=$('modelMode').value==='sampling';$('sampler').disabled=!sampling;$('creativity').disabled=!sampling||$('sampler').value==='default';$('creativityValue').textContent=Number($('creativity').value)>0?'+'+$('creativity').value:$('creativity').value}
+function controls(){const guide=engine.MODEL_GUIDES.find(g=>g.id===$('modelPreset').value),sampling=(guide.mode||$('modelMode').value)==='sampling';$('modelMode').disabled=guide.id!=='generic';$('sampler').querySelector('[value=provider]').disabled=!guide.baseline;$('sampler').disabled=!sampling;$('creativity').disabled=!sampling||['default','provider'].includes($('sampler').value);$('creativityValue').textContent=Number($('creativity').value)>0?'+'+$('creativity').value:$('creativity').value}
 function add(parent,tag,text,cls){const node=document.createElement(tag);node.textContent=text;if(cls)node.className=cls;parent.append(node);return node}
 function calculate(){
  controls();
- try{if(!$('constraints').checkValidity())throw Error('请填写有效的整数范围，不能留空或输入小数。');report=engine.generate(inputs());render();status(report.valid?'建议已重新计算，尚未写入 Aide。':'可用上下文不足，请先调整限制。',!report.valid)}catch(error){report=null;$('applicationState').textContent='输入无效';for(const id of ['outputStat','reasoningStat','parallelStat'])$(id).textContent='—';$('parameters').replaceChildren();$('budgetBar').replaceChildren();$('budgetLegend').replaceChildren();$('budgetEquation').textContent='';$('resultIntro').textContent='修正左侧输入后重新计算。';$('warnings').hidden=true;$('reportJson').value='';$('applicationGuide').replaceChildren();status(error.message,true)}
+ try{if(!$('constraints').checkValidity())throw Error('请填写有效的整数范围，不能留空或输入小数。');report=engine.generate(inputs());renderModelNotes(report.modelAdvice);render();status(report.valid?'建议已重新计算，尚未写入 Aide。':'可用上下文不足，请先调整限制。',!report.valid)}catch(error){report=null;$('applicationState').textContent='输入无效';for(const id of ['outputStat','reasoningStat','parallelStat'])$(id).textContent='—';$('parameters').replaceChildren();$('budgetBar').replaceChildren();$('budgetLegend').replaceChildren();$('budgetEquation').textContent='';$('resultIntro').textContent='修正左侧输入后重新计算。';$('warnings').hidden=true;$('reportJson').value='';$('applicationGuide').replaceChildren();status(error.message,true)}
  for(const id of ['copyProfile','copyReport','download'])$(id).disabled=!report?.valid;
 }
 function render(){
- $('applicationState').textContent=report.valid?'未应用':'预算不足';$('resultIntro').textContent=report.purpose.name+' · '+({speed:'快速响应',balanced:'均衡',quality:'充分分析'}[report.inputs.priority])+' · '+({unknown:'模型默认参数',sampling:'标准采样模型',reasoning:'推理兼容模式'}[report.inputs.modelMode]);
+ $('applicationState').textContent=report.valid?'未应用':'预算不足';$('resultIntro').textContent=report.purpose.name+' · '+({speed:'快速响应',balanced:'均衡',quality:'充分分析'}[report.inputs.priority])+' · '+({unknown:'模型默认参数',sampling:'标准采样模型',reasoning:'推理兼容模式'}[report.effectiveSettings.modelMode]);
  $('outputStat').textContent=report.valid?report.budget.maxTokens.toLocaleString():'不足';$('reasoningStat').textContent=report.sessionRecommendations?.reasoningEffort||'—';$('parallelStat').textContent=report.valid?report.sessionRecommendations.parallelism+'X':'—';
  const b=report.budget,parts=[['input','输入',b.inputTokens],['tools','工具预留',b.toolReserve],['safety','安全余量',b.safetyReserve],['output','输出预算',b.maxTokens]];
  $('budgetBar').replaceChildren();$('budgetLegend').replaceChildren();for(const [cls,label,value]of parts){const seg=add($('budgetBar'),'span','',`segment ${cls}`);seg.style.width=Math.min(100,value/b.contextWindow*100)+'%';const item=add($('budgetLegend'),'span','');add(item,'i','',cls);item.append(document.createTextNode(label+' '+value.toLocaleString()))}
@@ -29,9 +29,16 @@ async function copy(text){
 }
 for(const p of engine.PURPOSES){const button=add($('presets'),'button',p.name,'preset');button.type='button';button.dataset.purpose=p.id;button.title=p.detail;button.onclick=()=>{purpose=p.id;updatePurpose();calculate()}}
 function updatePurpose(){for(const b of $('presets').children)b.setAttribute('aria-pressed',String(b.dataset.purpose===purpose));$('purposeDescription').textContent=engine.PURPOSES.find(p=>p.id===purpose).detail}
-$('constraints').onsubmit=event=>{event.preventDefault();calculate()};for(const key of Object.keys(engine.DEFAULTS)){if(key!=='purpose')$(key).addEventListener('input',calculate)}
+$('constraints').onsubmit=event=>{event.preventDefault();calculate()};for(const key of Object.keys(engine.DEFAULTS)){if(!['purpose','modelPreset'].includes(key))$(key).addEventListener('input',calculate)}
 $('reset').onclick=()=>{for(const [key,value]of Object.entries(engine.DEFAULTS)){if(key==='purpose'){purpose=value;continue}const node=$(key);if(node.type==='checkbox')node.checked=value;else node.value=value}$('estimateText').value='';$('estimateResult').textContent='';updatePurpose();calculate()};
 $('estimate').onclick=()=>{try{const result=engine.estimateTokens($('estimateText').value);$('inputTokens').value=result.tokens;$('estimateResult').textContent=result.characters+' 个字符，粗略估算 '+result.tokens+' tokens。请补计历史等额外内容。';calculate()}catch(error){status(error.message,true)}};
 $('copyProfile').onclick=()=>{if(report?.valid)copy(JSON.stringify(report.profile,null,2))};$('copyReport').onclick=()=>{if(report?.valid)copy(JSON.stringify(report,null,2))};
 $('download').onclick=()=>{if(!report?.valid)return;const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)+'\n'],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=report.profile.id+'.strategy.json';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);status('已生成建议 JSON 下载。它不是 Aide 完整配置导入文件。')};
+function renderModelNotes(guide){
+ const host=$('modelNotes');host.replaceChildren();add(host,'h3','官方约束 / 基线');add(host,'p',guide.official);add(host,'h3','经验建议 · 未新增模型实测');add(host,'p',guide.practice);
+ if(guide.native){add(host,'h3','需在推理服务单独确认');add(host,'p',Object.entries(guide.native).map(([k,v])=>k+'='+v).join(' · '))}
+ const links=add(host,'p','');for(const [name,url]of guide.sources){const a=add(links,'a',name);a.href=url;a.target='_blank';a.rel='noopener noreferrer'}add(host,'small','资料核对：2026-11-24；具体型号和服务版本仍需确认。');
+}
+for(const guide of engine.MODEL_GUIDES){const o=add($('modelPreset'),'option',guide.name);o.value=guide.id}
+$('modelPreset').onchange=()=>{const guide=engine.MODEL_GUIDES.find(g=>g.id===$('modelPreset').value);$('modelMode').value=guide.mode||engine.DEFAULTS.modelMode;$('sampler').value=guide.baseline?'provider':guide.mode==='sampling'?'temperature':'default';$('creativity').value=0;calculate()};
 updatePurpose();calculate();

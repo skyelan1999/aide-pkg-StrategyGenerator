@@ -5,7 +5,7 @@ if(manifest.version!==JSON.parse(read('package.json')).version)throw Error('Vers
 const engine=read('src/engine.js');
 if(!engine.includes("const VERSION='"+manifest.version+"'"))throw Error('Engine version mismatch');
 const rules=/RULES_VERSION='([^']+)'/.exec(engine)[1];
-const html=read('src/viewer.html').replaceAll('__VERSION__',manifest.version).replaceAll('__RULES__',rules).replace('/* ENGINE */',()=>engine).replace('/* APP */',()=>read('src/viewer.js'));
+const html=read('src/viewer.html').replaceAll('__VERSION__',manifest.version).replaceAll('__RULES__',rules).replace('/* ENGINE */',()=>engine).replace('/* THEME */',()=>read('src/theme.js')).replace('/* APP */',()=>read('src/viewer.js'));
 fs.writeFileSync(path.join(root,'viewer.html'),html);
 const inline='(() => {const module={exports:{}};\n'+engine+'\nreturn module.exports;})()';
 const entry=read('src/plugin.cjs').replace("require('./engine.js')",()=>inline);
