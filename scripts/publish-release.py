@@ -11,7 +11,7 @@ def mutate(repo,route,body):
 def validate_ci(run,jobs,source):
  assert run['name']=='Strategy Generator checks' and run['conclusion']=='success' and run['head_sha']==source
  assert run['path']=='.github/workflows/ci.yml'
- expected={f'check ({os}, {node})' for os in ['ubuntu-22.04','windows-2022','macos-15'] for node in [18,24]}
+ expected={f'check ({os}, {node})' for os in ['ubuntu-22.04','windows-2022','macos-15-intel'] for node in [18,24]}
  assert {j['name'] for j in jobs}==expected and len(jobs)==6 and all(j['conclusion']=='success' for j in jobs)
 def main():
  p=argparse.ArgumentParser();p.add_argument('--repo',required=True);p.add_argument('--version',required=True);p.add_argument('--source',required=True);p.add_argument('--ci-run',required=True);a=p.parse_args()
