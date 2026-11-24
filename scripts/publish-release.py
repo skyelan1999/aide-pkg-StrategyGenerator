@@ -8,16 +8,21 @@ def api(repo,route):return json.loads(gh('api','repos/'+repo+'/'+route))
 def mutate(repo,route,body):
  with tempfile.NamedTemporaryFile(mode='w',suffix='.json') as request:
   json.dump(body,request);request.flush();return json.loads(gh('api','repos/'+repo+'/'+route,'--method','POST' if route=='releases' else 'PATCH','--input',request.name))
+def validate_ci(run,jobs,source):
+ assert run['name']=='Strategy Generator checks' and run['conclusion']=='success' and run['head_sha']==source
+ assert run['path']=='.github/workflows/ci.yml'
+ expected={f'check ({os}, {node})' for os in ['ubuntu-22.04','windows-2022','macos-15'] for node in [18,24]}
+ assert {j['name'] for j in jobs}==expected and len(jobs)==6 and all(j['conclusion']=='success' for j in jobs)
 def main():
  p=argparse.ArgumentParser();p.add_argument('--repo',required=True);p.add_argument('--version',required=True);p.add_argument('--source',required=True);p.add_argument('--ci-run',required=True);a=p.parse_args()
  assert re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',a.repo) and re.fullmatch(r'\d+\.\d+\.\d+',a.version) and re.fullmatch('[0-9a-f]{40}',a.source) and a.ci_run.isdigit()
- assert gh('rev-parse','HEAD').strip()==a.source
+ assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()==a.source
  subprocess.run(['git','merge-base','--is-ancestor',a.source,'origin/main'],cwd=ROOT,check=True)
  assert json.loads((ROOT/'manifest.json').read_text())['version']==a.version
- run=api(a.repo,'actions/runs/'+a.ci_run);assert run['name']=='Strategy Generator checks' and run['conclusion']=='success' and run['head_sha']==a.source
- assert run['path']=='.github/workflows/ci.yml'
- jobs=api(a.repo,'actions/runs/'+a.ci_run+'/jobs')['jobs'];assert len(jobs)==6 and all(j['conclusion']=='success' for j in jobs)
+ run=api(a.repo,'actions/runs/'+a.ci_run);jobs=api(a.repo,'actions/runs/'+a.ci_run+'/jobs')['jobs'];validate_ci(run,jobs,a.source)
  package=ROOT/'dist'/f'strategy-generator-{a.version}.zip';sidecar=package.with_suffix('.zip.sha256');digest=hashlib.sha256(package.read_bytes()).hexdigest();assert sidecar.read_text().split()==[digest,package.name]
+ remote_tag=subprocess.check_output(['git','ls-remote','--tags','origin','refs/tags/v'+a.version],cwd=ROOT,text=True).strip()
+ assert not remote_tag or remote_tag.split()[0]==a.source
  existing=[r for r in api(a.repo,'releases') if r['tag_name']=='v'+a.version]
  if existing:
   assert len(existing)==1 and existing[0]['draft'] and existing[0]['target_commitish']==a.source;release=existing[0]
